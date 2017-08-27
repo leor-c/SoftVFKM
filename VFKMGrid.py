@@ -128,9 +128,7 @@ class VFKMGrid:
         A = np.array([vLocs[:, 0].T, vLocs[:,1].T, np.array([1, 1, 1])])
         b = np.array([[location[0]], [location[1]], [1]])
         lambda_const = np.linalg.solve(A,b)
-        print('###')
-        print(np.reshape(lambda_const,(lambda_const.size,)))
-        barycentricVec = sc.bsr_matrix((np.reshape(lambda_const,(lambda_const.size,)), (face, np.array([0, 0, 0]))))
+        barycentricVec = sc.csr_matrix((np.reshape(lambda_const,(lambda_const.size,)), (face, np.array([0, 0, 0]))), shape=(self.numOfV,1))
         return barycentricVec
 
 
@@ -168,7 +166,7 @@ class VFKMGrid:
         faces = {}
         barycentric = {}
 
-        for segment_i in np.arange(0, n_points-1):
+        for segment_i in np.arange(0, n_points[0]-1):
             #   tellesate each raw segment:
             s_begin = trajectory[segment_i,:]
             s_end = trajectory[segment_i + 1,:]
@@ -217,14 +215,14 @@ class VFKMGrid:
             '''
             numNewPts = numOfVertical + numOfHorizontal + numOfDiag
             if numNewPts == 0:
-                tesselatedTrajectory[segment_i] = np.array([np.hstack((s_begin, 0)), np.hstack((s_end, 1))])
-                faces[segment_i] = np.array([f_begin, f_end])
-                barycentric[segment_i] = np.array([bary_begin, bary_end])
+                tesselatedTrajectory[segment_i] = np.vstack([np.hstack((s_begin, 0)), np.hstack((s_end, 1))])
+                faces[segment_i] = np.vstack([f_begin, f_end])
+                barycentric[segment_i] = sc.vstack([bary_begin.T, bary_end.T], 'csr')
                 continue
 
             newPoints = np.zeros((numNewPts, 4))
-            newPointsFaces = np.zeros((numNewPts, 3))
-            newPointsBary = np.zeros((numNewPts, self.numOfV))
+            newPointsFaces = np.zeros((numNewPts, 3), dtype=int)
+            newPointsBary = sc.csr_matrix((numNewPts, self.numOfV), dtype=float)
 
             s_vec = s_end - s_begin
 
@@ -235,7 +233,7 @@ class VFKMGrid:
                 x_int = np.array([min(s_begin[0], s_end[0]), max(s_begin[0], s_end[0])])
                 horiz_1st = np.ceil(np.abs(x_int[0] - self.X_Interval[0]) / self.delta_x) + 1
                 horiz_last = np.floor(np.abs(x_int[1] - self.X_Interval[0]) / self.delta_x) + 1
-                known_X = lambda i: (self.X_Interval[0] + (i - 1) * self.delta_x)
+                known_X = lambda i: (self.X_Interval[0] + (int(i) - 1) * self.delta_x)
                 '''
                 % ensure correct calculation:
                 '''
@@ -244,19 +242,18 @@ class VFKMGrid:
                     '''
                     %   get the intersection point with this edge!
                     '''
-                    s = (known_X(horiz_idx) - s_begin[0]) / s_vec[0]
+                    s = float(known_X(horiz_idx) - s_begin[0]) / s_vec[0]
                     new_point = s_begin + s * s_vec
-                    new_pt_idx = horiz_idx - horiz_1st
+                    new_pt_idx = int(horiz_idx - horiz_1st)
                     newPoints[new_pt_idx,:] = np.hstack((new_point, s))
                     newPointsFaces[new_pt_idx,:] = self.getFaceVertices(new_point)
-                    newPointsBary[new_pt_idx,:] = self.getBarycentricCoords(new_point, newPointsFaces[new_pt_idx,:])
-
+                    newPointsBary[new_pt_idx,:] = self.getBarycentricCoords(new_point, newPointsFaces[new_pt_idx,:]).T
             '''
             %   add horizontal intersection points:
             '''
             if numOfHorizontal > 0:
 
-                horizBounds = np.array([np.mod(f_begin[0], self.numOfVrtx_y), np.mod(f_end[0], self.numOfVrtx_y)])[::-1].sort()
+                horizBounds = np.sort(np.array([np.mod(f_begin[0], self.numOfVrtx_y), np.mod(f_end[0], self.numOfVrtx_y)]))[::-1]
                 horizBounds = np.arange(horizBounds[0], horizBounds[1], -1)
 
                 assert (horizBounds.size == numOfHorizontal);
@@ -269,7 +266,7 @@ class VFKMGrid:
                     new_pt_idx = numOfVertical + horizBounds[0] - vert_idx
                     newPoints[new_pt_idx,:] = np.hstack((new_point, s))
                     newPointsFaces[new_pt_idx,:] = self.getFaceVertices(new_point)
-                    newPointsBary[new_pt_idx,:] = self.getBarycentricCoords(new_point, newPointsFaces[new_pt_idx,:])
+                    newPointsBary[new_pt_idx,:] = self.getBarycentricCoords(new_point, newPointsFaces[new_pt_idx,:]).T
 
             '''
             %   add diagonal intersection points:
@@ -312,12 +309,12 @@ class VFKMGrid:
                     new_pt_idx = numOfVertical + numOfHorizontal + cur_diag
                     newPoints[new_pt_idx,:] = np.hstack((new_point, s))
                     newPointsFaces[new_pt_idx,:] = self.getFaceVertices(new_point)
-                    newPointsBary[new_pt_idx,:] = self.getBarycentricCoords(new_point, newPointsFaces[new_pt_idx,:])
+                    newPointsBary[new_pt_idx,:] = self.getBarycentricCoords(new_point, newPointsFaces[new_pt_idx,:]).T
 
             '''
             %   sort by 4th row, and them omit the 4th row:
             '''
-            I = np.argsort(newPoints[:, 4])
+            I = np.argsort(newPoints[:, 3])
             newPoints = newPoints[I,:]
             _, ia = np.unique(newPoints, return_index=True, axis=0)
             ia = np.sort(ia)
@@ -332,7 +329,7 @@ class VFKMGrid:
                                                         newPoints,
                                                         np.concatenate((s_end, [1]),axis=0)))
             faces[segment_i] = np.vstack((f_begin, newPointsFaces, f_end))
-            barycentric[segment_i] = np.vstack((bary_begin, newPointsBary, bary_end))
+            barycentric[segment_i] = sc.vstack([bary_begin.T, newPointsBary, bary_end.T], 'csr')
 
         '''
         %   remove empty cells:
@@ -344,9 +341,8 @@ class VFKMGrid:
 
         faces = np.vstack([v for k, v in faces.items()])
         faces = faces[ia, :]
-
-        barycentric = np.vstack([v for k, v in barycentric.items()])
-        barycentric = barycentric[ia, :]
+        barycentric = sc.vstack([v for k, v in barycentric.items()], 'csr')
+        barycentric = sc.vstack([barycentric[ia_v, :] for ia_v in ia], 'csr')
 
         return tesselatedTrajectory, faces, barycentric
 
@@ -426,7 +422,7 @@ class VFKMGrid:
                 Vals[cur_elem] = w_hor
                 cur_elem = cur_elem + 1
 
-        W = sc.bsr_matrix((Vals, (I, J)), shape=(self.numOfV, self.numOfV))
+        W = sc.csr_matrix((Vals, (I, J)), shape=(self.numOfV, self.numOfV))
 
         L = (D - W)
 
