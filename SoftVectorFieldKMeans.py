@@ -17,7 +17,7 @@ class SoftVectorFieldKMeans:
     %   2. call convergeClusters method
     %   3. call plotResults method
     '''
-    def __init__(self, k, trajectoriesFile, gridRes, smoothnessWeight=0.05, certaintyWeight=0.35):
+    def __init__(self, k, trajectoriesFile, gridRes, smoothnessWeight=0.05, certaintyWeight=0.35, verbose=1):
         '''
         %   Constructor - initialization and running of the algorithm.
             %   k - num of clusters
@@ -32,12 +32,16 @@ class SoftVectorFieldKMeans:
             %                     the more confident it is. default
             %                     is 0.35. if you dont want to give a
             %                     value, enter [] as value.
+            #   verbose - the amount of info the algorithm prints. higher value = more info
         :param k:
         :param trajectoriesFile:
         :param gridRes:
         :param smoothnessWeight:
         :param certaintyWeight:
         '''
+        #   set a variable for amount of info shown:
+        self.verbose = verbose
+
         self.numOfClusters = k
         self.vectorFields = {}
 
@@ -73,13 +77,20 @@ class SoftVectorFieldKMeans:
         self.Laplacian = self.grid.getLaplacian()
 
         #   tessellate trajectories by grid:
+        self.logInfo('Tessellating trajectories...', 2)
         self.tessellateTrajByGrid()
 
         #   compute the time of each trajectory:
         self.trajectoriesTimes = self.computeTrajectoriesTimes()
 
         #   compute C_tilde, b_tilde of each trajectory:
+        self.logInfo('Computing matrices...', 2)
         self.calculateTrajMatrices()
+
+
+    def logInfo(self, info, logLevel=1):
+        if self.verbose >= logLevel:
+            print(info)
 
 
     def readInput(self, trajectoriesFile):
@@ -115,7 +126,7 @@ class SoftVectorFieldKMeans:
                 '''
                 MinNumOfPtsInCurve = 2
                 if i - firstRow < MinNumOfPtsInCurve:
-                    print('Oh Oo, input file has trajectory with less than 2 points! DISCARDING')
+                    self.logInfo('Oh Oo, input file has trajectory with less than 2 points! DISCARDING')
                 else:
                     self.trajectories[curTraj] = rawSamples[firstRow:i, :]
                     self.totalTime += (rawSamples[i-1, 2] - rawSamples[firstRow, 2])
@@ -140,7 +151,7 @@ class SoftVectorFieldKMeans:
                     omit.append(k)
                     break
 
-        print('Removing ' + str(len(omit)) + ' trajectories out of bounds.')
+        self.logInfo('Removing ' + str(len(omit)) + ' trajectories out of bounds.')
         for idx in omit:
             del self.trajectories[idx]
 
@@ -228,7 +239,8 @@ class SoftVectorFieldKMeans:
                 CallSeg[seg_i] = omega_tag * np.dot(self.Lambda, Cs)
 
                 #   compute bs_tilde:
-                bs = (traj[seg_i + 1, 0:2] - traj[seg_i, 0:2]) / (traj[seg_i + 1, 2] - traj[seg_i, 2])
+                eps = 1e-7
+                bs = np.true_divide((traj[seg_i + 1, 0:2] - traj[seg_i, 0:2]), (traj[seg_i + 1, 2] - traj[seg_i, 2] + eps))
                 b_allSeg[seg_i] = omega_tag * np.dot(self.Lambda, np.tile(bs, (2, 1)))
 
                 startBary = endBary
