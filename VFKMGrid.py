@@ -335,7 +335,7 @@ class VFKMGrid:
         %   remove empty cells:
         '''
         tesselatedTrajectory = np.vstack([v for k, v in tesselatedTrajectory.items()])
-        _, ia = np.unique(tesselatedTrajectory, axis=0, return_index=True)
+        _, ia = np.unique(tesselatedTrajectory[:, 0:3], axis=0, return_index=True)
         ia = np.sort(ia)
         tesselatedTrajectory = tesselatedTrajectory[ia, 0:3]
 

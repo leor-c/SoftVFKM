@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-import scipy as sc
+import scipy.sparse as sc
 import VFKMGrid
 
 class SoftVectorFieldKMeans:
@@ -86,6 +86,16 @@ class SoftVectorFieldKMeans:
         #   compute C_tilde, b_tilde of each trajectory:
         self.logInfo('Computing matrices...', 2)
         self.calculateTrajMatrices()
+        self.C_tilde, self.b_tilde, self.trajectories_n_rows = self.getValueConstrains(self.trajectories,
+                                                                                     self.trajectoriesBary)
+        #   save everything...
+        #pd.DataFrame(self.trajectories).to_csv('SVFKM_'+self.trajectoriesFile)
+
+        #   set the initial assignment of trajectories to clusters:
+        self.initializeAssignment()
+
+        #   compute probabilities to weights matrix:
+        self.probaToWeightMatrix = self.getProbToWeightsMax()
 
 
     def logInfo(self, info, logLevel=1):
@@ -124,14 +134,21 @@ class SoftVectorFieldKMeans:
                 '''
                 CHECK that the trajectory has at least 2 points:
                 '''
+                #   remove seequences of points with same coordinates:
+                trajectory = rawSamples[firstRow:i, :]
+                _, uniqueCoordsIdxs = np.unique(trajectory[:, 0:2], return_index=True, axis=0)
+                uniqueCoordsIdxs = np.sort(uniqueCoordsIdxs)
+                trajectory = trajectory[uniqueCoordsIdxs, :]
+
                 MinNumOfPtsInCurve = 2
-                if i - firstRow < MinNumOfPtsInCurve:
+                if trajectory.shape[0] < MinNumOfPtsInCurve:
                     self.logInfo('Oh Oo, input file has trajectory with less than 2 points! DISCARDING')
                 else:
-                    self.trajectories[curTraj] = rawSamples[firstRow:i, :]
-                    self.totalTime += (rawSamples[i-1, 2] - rawSamples[firstRow, 2])
+                    self.trajectories[curTraj] = trajectory
+                    self.totalTime += (trajectory[-1, 2] - trajectory[0, 2])
+                    curTraj += 1
                 firstRow = i+1
-                curTraj += 1
+
         #print(self.trajectories.items())
 
 
@@ -177,6 +194,136 @@ class SoftVectorFieldKMeans:
         %   possible.
         :return:
         '''
+        #   1. pick random trajectory:
+        n_traj = len(self.trajectories)
+        import random
+        random.seed()
+        t1 = random.randint(0, n_traj-1)
+
+        #   2. generate the 1st VF:
+        VFs = {}
+        VFs[0] = self.findVectorFieldForTraj(t1)
+
+        for vf_i in range(1, self.numOfClusters):
+            maxErr = -1
+            maxIdx = -1
+            for traj_j in range(n_traj):
+                err = self.assignTrajToVF([VFs[i] for i in range(vf_i)], traj_j)
+                minErr = np.min(err)
+                if minErr > maxErr:
+                    maxErr = minErr
+                    maxIdx = traj_j
+
+            VFs[vf_i] = self.findVectorFieldForTraj(maxIdx)
+
+        #   calculate probabilities matrix (assignment):
+        self.probabilitiesMatrix = self.computeProbabilities(VFs)
+
+
+    def fitVectorField(self, VF_idx):
+        '''
+        %   generate the vector field with only the trajectories
+        %   assigned to it. VF_idx is the index of the trajectories
+        %   associated with VF.
+        %   VF is matrix of size 2V * 2 where each row is (vx,vy)
+        %   vector at a vertex.
+        %   In this function I'll solve Ax=b according to the paper.
+        %   A = (lambdaL * L^T*L + C~^T*C~)
+        %   b = C~^T * b~
+        :param VF_idx:
+        :return:
+        '''
+        smoothness = np.dot(self.Laplacian.T, self.Laplacian) * self.smoothnessWeight
+        #   obtain the value constraint expression:
+        #   multiply by weights:
+        weights = np.dot(self.probaToWeightMatrix, self.probabilitiesMatrix[:, VF_idx])
+        weightedTimes = np.dot(self.trajectoriesTimes.T, self.probabilitiesMatrix[:,VF_idx])
+        coefficient = np.sqrt((1 - self.smoothnessWeight))
+        assert weights.shape[1] == 1
+        cur_C_tilde = np.multiply((coefficient * np.sqrt(weights / weightedTimes)), self.C_tilde)
+        cur_b_tilde = np.multiply((coefficient * np.sqrt(weights / weightedTimes)), self.b_tilde)
+
+        A = smoothness + np.dot(cur_C_tilde.T, cur_C_tilde)
+        b = np.dot(cur_C_tilde.T, cur_b_tilde)
+
+        VF_x = np.linalg.lstsq(A, b[:, 0])[0]
+        VF_y = np.linalg.lstsq(A, b[:, 1])[0]
+
+        VF = np.hstack([VF_x, VF_y])
+        return VF
+
+
+    def findVectorFieldForTraj(self, trajIdx):
+        '''
+        %   generate the vector field with only the trajectories
+        %   assigned to it. VF_idx is the index of the trajectories
+        %   associated with VF.
+        %   VF is matrix of size 2V * 2 where each row is (vx,vy)
+        %   vector at a vertex.
+        %   In this function I'll solve Ax=b according to the paper.
+        %   A = (lambdaL * L^T*L + C~^T*C~)
+        %   b = C~^T * b~
+        :param trajIdx:
+        :return:
+        '''
+        smoothness = np.dot(self.Laplacian.T, self.Laplacian) * self.smoothnessWeight
+        #   obtain the value constraint expression:
+        cur_C_tilde = self.trajectoriesC[trajIdx].toarray()
+        cur_b_tilde = self.trajectoriesb[trajIdx]
+
+        A = smoothness + np.dot(cur_C_tilde.T, cur_C_tilde)
+        b = np.dot(cur_C_tilde.T, cur_b_tilde)
+
+        VF_x = np.linalg.lstsq(A, b[:, 0])[0]
+        VF_y = np.linalg.lstsq(A, b[:, 1])[0]
+
+        VF = np.hstack([np.reshape(VF_x,(A.shape[1],1)), np.reshape(VF_y,(A.shape[1],1))])
+        #TODO - verify this is a good VF structure
+        return VF
+
+
+    def assignTrajToVF(self, VFs, trajectory_idx):
+        '''
+        %   calculate the error for each of the given VFs, and return
+        %   the index of the best fitting VF.
+        %   VFs - a cell array of vector field matrices
+        %   trajectory - matrix of samples
+        :param VFs: a cell array of vector field matrices
+        :param trajectory_idx: index of trajectory
+        :return: errors of the given trajectory on each of the VFs
+        '''
+        errors = np.array([self.calculateTrajectoryFit(VF, trajectory_idx) for VF in VFs])
+        return errors
+
+    def calculateTrajectoryFit(self, VF, trajectory_idx):
+        '''
+        %   calculate the error of the given trajectory on the given
+        %   vector field.
+        %   trajectory - matrix of sample points (single element of the
+        %   set)
+        %   VF - matrix of size V x 2 (two coordinates x,y)
+        %[C,b] = obj.getValueConstrains({trajectory}, {trajectoryBary});
+        :param VF:
+        :param trajectory_idx:
+        :return:
+        '''
+        C = self.trajectoriesC[trajectory_idx]
+        b = self.trajectoriesb[trajectory_idx]
+
+        '''
+        %   because both C,b are multiplied by  sqrt(1-lambda) we can
+        %   ignore this
+        '''
+        err = np.zeros((1, 2))
+        vf_x = np.reshape(VF[:, 0],(VF.shape[0],1))
+        vf_y = np.reshape(VF[:, 1],(VF.shape[0],1))
+        b_x = np.reshape(b[:, 0],(b.shape[0],1))
+        b_y = np.reshape(b[:, 1],(b.shape[0],1))
+        CTC = np.dot(C.T, C)
+        err[0] = np.dot(np.dot(vf_x.T, CTC), vf_x) - 2 * np.dot(np.dot(b_x.T, C), vf_x) + np.dot(b_x.T, b_x)
+        err[1] = np.dot(np.dot(vf_y.T, CTC), vf_y) - 2 * np.dot(np.dot(b_y.T, C), vf_y) + np.dot(b_y.T, b_y)
+        err = np.sum(err)
+        return err
 
 
     def computeTrajectoriesTimes(self):
@@ -189,7 +336,7 @@ class SoftVectorFieldKMeans:
         for i in range(len(self.trajectories)):
             t = self.trajectories[i]
             trajectoriesTimes.append(t[-1,2]-t[0,2])
-        return trajectoriesTimes
+        return np.array(trajectoriesTimes)
 
 
     def calculateTrajMatrices(self):
@@ -213,8 +360,8 @@ class SoftVectorFieldKMeans:
         :param VFtrajectoriesBary:
         '''
         nTraj = len(VFtrajectories)
-        C_tilde = {}
-        b_tilde = {}
+        C_tilde = []
+        b_tilde = []
         n_rows = {}
 
         for traj_i in range(nTraj):
@@ -222,7 +369,7 @@ class SoftVectorFieldKMeans:
             traj_bary = VFtrajectoriesBary[traj_i]
             nSamples = traj.shape[0]
             nSegments = nSamples - 1
-            CallSeg = {}
+            CallSeg = []
             b_allSeg = {}
 
             startBary = traj_bary[0, :]
@@ -230,13 +377,15 @@ class SoftVectorFieldKMeans:
                 endBary = traj_bary[seg_i + 1, :]
 
                 #   compute Cs_tilde:
-                Cs = np.array([startBary, endBary])
+                Cs = sc.vstack([startBary, endBary])
+                assert Cs.shape == (2, self.grid.numOfV)
                 '''
                 %   IMPORTANT: I will not divide by T right here, I
                 %   will divide only once at the end!
                 '''
                 omega_tag = np.sqrt(traj[seg_i + 1, 2] - traj[seg_i, 2])
-                CallSeg[seg_i] = omega_tag * np.dot(self.Lambda, Cs)
+                CallSeg.append(omega_tag * np.dot(self.Lambda, Cs.toarray()))
+                #CallSeg.append(sc.csr_matrix.multiply(sc.csr_matrix.transpose(sc.csr_matrix.dot(sc.csr_matrix.transpose(Cs), sc.csr_matrix(self.Lambda.T))), omega_tag))
 
                 #   compute bs_tilde:
                 eps = 1e-7
@@ -244,9 +393,12 @@ class SoftVectorFieldKMeans:
                 b_allSeg[seg_i] = omega_tag * np.dot(self.Lambda, np.tile(bs, (2, 1)))
 
                 startBary = endBary
-
-            C_tilde[traj_i] = np.vstack([CallSeg[i] for i in range(len(CallSeg))])
-            b_tilde[traj_i] = np.vstack([b_allSeg[i] for i in range(len(b_allSeg))])
+            if nSegments > 1:
+                C_tilde.append(sc.csr_matrix(np.vstack(CallSeg)))
+                b_tilde.append(np.vstack(list(b_allSeg.values())))
+            else:
+                C_tilde.append(CallSeg[0])
+                b_tilde.append(b_allSeg[0])
             n_rows[traj_i] = C_tilde[traj_i].shape[0]
 
         '''
@@ -254,9 +406,102 @@ class SoftVectorFieldKMeans:
             %   Note: I use weighted T (for each cluster) so this will be
             %   added later on, ALSO, I will add the (1-lambda) later
         '''
-        C_tilde = np.vstack([C_tilde[i] for i in range(len(C_tilde))])
-        b_tilde = np.vstack([b_tilde[i] for i in range(len(b_tilde))])
+        if len(C_tilde) > 1:
+            C_tilde = sc.vstack(C_tilde)
+            b_tilde = np.vstack(b_tilde)
+        else:
+            C_tilde = C_tilde[0]
+            b_tilde = b_tilde[0]
+
         return C_tilde, b_tilde, n_rows
+
+
+    def computeProbabilities(self, VFs):
+        '''
+        %   calculate the errors for each trajectory on each VF, and
+        %   use a softmax function to turn them into probabilities:
+        :param VFs:
+        :return:
+        '''
+        n_traj = len(self.trajectories)
+        probabilities = np.zeros((n_traj, len(VFs)))
+
+        for traj_j in range(n_traj):
+            traj_errors = self.assignTrajToVF(VFs, traj_j)
+            errsSum = np.sum(traj_errors)
+            avgErrSum = errsSum / self.numOfClusters
+            eps = 1e-8
+            relations = avgErrSum / (traj_errors + eps)
+            #   move to interval [0,10]:
+            bounds = np.array([0, max(relations)])
+            moveToInterval = lambda x: self.certaintyWeight * 10 * (x - bounds[0]) / (bounds[1] - bounds[0])
+            relations = moveToInterval(relations)
+            sumRel = np.sum(np.exp(relations))
+            probabilities[traj_j,:] = np.exp(relations) / sumRel
+
+        return probabilities
+
+
+    def getProbToWeightsMax(self):
+        '''
+        %   compute the matrix that help calculate the weights for the
+        %   C_tilde and b_tilde matrices at each iteration.
+        :return:
+        '''
+        n_rows = self.C_tilde.shape[0]
+        n_cols = len(self.trajectories)
+        I = np.arange(n_rows)
+        J = np.zeros((1, n_rows))
+        Vals = np.zeros((1, n_rows))
+        cur_row = 0
+
+        for i in range(len(self.trajectories_n_rows)):
+            cur_last = cur_row + self.trajectories_n_rows[i] - 1
+            Vals[cur_row: cur_last] = 1
+            J[cur_row: cur_last] = i
+            cur_row = cur_last + 1
+
+        probaToWeightsMat = sc.csr_matrix((Vals, (I, J)), (n_rows, n_cols))
+        return probaToWeightsMat
+
+
+    def convergeClusters(self, convergenceThreshold=1e-8, maxIterations=50, verbose=1):
+        '''
+        %   this is the main loop of the algorithm!
+        %   perform steps until reached convergence, then the vector
+        %   fields and assignment function will be vaild! [=
+        :param convergenceThreshold:
+        :param maxIterations:
+        :param verbose: amount of info to print. higher value = more info
+        :return:
+        '''
+        #   initialize vector fields to zeros if not defined yet:
+        if len(self.vectorFields) != self.numOfClusters:
+            self.vectorFields = [np.zeros((self.grid.numOfV, 2)) for i in range(self.numOfClusters)]
+
+        stepSize = np.inf
+        iter = 1
+        while stepSize > convergenceThreshold and iter < maxIterations:
+            #   perform a step:
+            stepSize = 0
+            newVFs = {}
+            for i in range(self.numOfClusters):
+                newVFs[i] = self.fitVectorField(i)
+                #   calculate step size:
+                stepSize = stepSize + np.linalg.norm(newVFs[i] - self.vectorFields[i], ord='fro')
+
+            self.vectorFields = newVFs
+
+            #   recalculate the assignment function
+            newProbabilities = self.computeProbabilities(self.vectorFields)
+
+            self.logInfo(str(iter) + ') Current Step Size: ' + str(stepSize))
+            iter = iter + 1
+
+            #   update the assignment function:
+            self.probabilitiesMatrix = newProbabilities
+
+
 
 
 
