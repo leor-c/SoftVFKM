@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sc
 import VFKMGrid
+import matplotlib.pyplot as plt
+import matplotlib.collections as mcoll
 
 class SoftVectorFieldKMeans:
     '''
@@ -248,8 +250,6 @@ class SoftVectorFieldKMeans:
         A = smoothness + (cur_C_tilde.T @ cur_C_tilde)
         b = (cur_C_tilde.T @ cur_b_tilde)
 
-        #VF_x = np.linalg.lstsq(A, b[:, 0])[0]
-        #VF_y = np.linalg.lstsq(A, b[:, 1])[0]
         from scipy.sparse.linalg import lsqr
         VF_x = np.array(lsqr(A, b[:, 0])[0])
         VF_y = np.array(lsqr(A, b[:, 1])[0])
@@ -283,7 +283,6 @@ class SoftVectorFieldKMeans:
         VF_y = np.linalg.lstsq(A, b[:, 1])[0]
 
         VF = np.hstack([np.reshape(VF_x,(A.shape[1],1)), np.reshape(VF_y,(A.shape[1],1))])
-        #TODO - verify this is a good VF structure
         return VF
 
 
@@ -505,6 +504,94 @@ class SoftVectorFieldKMeans:
 
             #   update the assignment function:
             self.probabilitiesMatrix = newProbabilities
+
+
+    def plotResults(self, showAlsoVFsAlone=False, rotated=False):
+        subplotsInCol = np.ceil(np.sqrt(self.numOfClusters))
+        subplotsInRow = np.ceil(float(self.numOfClusters) / subplotsInCol)
+
+        X_AXIS = 0
+        Y_AXIS = 1
+        if rotated:
+            X_AXIS = 1
+            Y_AXIS = 0
+
+        xy = self.grid.vertexLocations
+        if showAlsoVFsAlone:
+            plt.figure(1)
+            for i in range(self.numOfClusters):
+                plt.subplot(subplotsInCol, subplotsInRow, i+1)
+                vf = self.vectorFields[i]
+                plt.quiver(xy[:, X_AXIS], xy[:, Y_AXIS], vf[:, X_AXIS], vf[:, Y_AXIS])
+                plt.axis('equal')
+
+        plt.figure(2)
+        n_traj = len(self.trajectories)
+        blue = 0
+        red = 1
+        colorGrad = lambda t: (1 - t) * blue + t * red
+        for curClstr in range(self.numOfClusters):
+            plt.subplot(subplotsInCol, subplotsInRow, curClstr+1)
+
+            for i in range(n_traj):
+                cur_t = self.trajectories[i]
+
+                x = cur_t[:, X_AXIS]
+                y = cur_t[:, Y_AXIS]
+                line = self.colorline(x, y, alpha=self.probabilitiesMatrix[i,curClstr])
+                #plt.plot(line)
+
+
+            vf = self.vectorFields[curClstr]
+            plt.quiver(xy[:, X_AXIS], xy[:, Y_AXIS], vf[:, X_AXIS], vf[:, Y_AXIS])
+            plt.axis('equal')
+            plt.title('Cluster #' + str(curClstr))
+        plt.show()
+        return
+
+
+    @staticmethod
+    def colorline(x, y, z=None, cmap='plasma', norm=plt.Normalize(0.0, 1.0), linewidth=1, alpha=1.0):
+
+        """
+        http://nbviewer.ipython.org/github/dpsanders/matplotlib-examples/blob/master/colorline.ipynb
+        http://matplotlib.org/examples/pylab_examples/multicolored_line.html
+        Plot a colored line with coordinates x and y
+        Optionally specify colors in the array z
+        Optionally specify a colormap, a norm function and a line width
+        """
+
+        # Default colors equally spaced on [0,1]:
+        if z is None:
+            z = np.linspace(0.0, 1.0, len(x))
+
+        # Special case if a single number:
+        # to check for numerical input -- this is a hack
+        if not hasattr(z, "__iter__"):
+            z = np.array([z])
+
+        z = np.asarray(z)
+
+        segments = SoftVectorFieldKMeans.make_segments(x, y)
+        lc = mcoll.LineCollection(segments, array=z, cmap=cmap, norm=norm,
+                                  linewidth=linewidth, alpha=alpha)
+
+        ax = plt.gca()
+        ax.add_collection(lc)
+
+        return lc
+
+    @staticmethod
+    def make_segments(x, y):
+        """
+        Create list of line segments from x and y coordinates, in the correct format
+        for LineCollection: an array of the form numlines x (points per line) x 2 (x
+        and y) array
+        """
+
+        points = np.array([x, y]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        return segments
 
 
 

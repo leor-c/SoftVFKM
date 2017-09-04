@@ -217,7 +217,7 @@ class VFKMGrid:
             if numNewPts == 0:
                 tesselatedTrajectory[segment_i] = np.vstack([np.hstack((s_begin, 0)), np.hstack((s_end, 1))])
                 faces[segment_i] = np.vstack([f_begin, f_end])
-                barycentric[segment_i] = sc.vstack([bary_begin.T, bary_end.T], 'csr')
+                barycentric[segment_i] = sc.vstack([bary_begin.T, bary_end.T], format='csr')
                 continue
 
             newPoints = np.zeros((numNewPts, 4))
