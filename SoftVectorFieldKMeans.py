@@ -201,20 +201,20 @@ class SoftVectorFieldKMeans:
         t1 = random.randint(0, n_traj-1)
 
         #   2. generate the 1st VF:
-        VFs = {}
-        VFs[0] = self.findVectorFieldForTraj(t1)
+        VFs = []
+        VFs.append(self.findVectorFieldForTraj(t1))
 
         for vf_i in range(1, self.numOfClusters):
             maxErr = -1
             maxIdx = -1
             for traj_j in range(n_traj):
-                err = self.assignTrajToVF([VFs[i] for i in range(vf_i)], traj_j)
+                err = self.assignTrajToVF(VFs, traj_j)
                 minErr = np.min(err)
                 if minErr > maxErr:
                     maxErr = minErr
                     maxIdx = traj_j
 
-            VFs[vf_i] = self.findVectorFieldForTraj(maxIdx)
+            VFs.append(self.findVectorFieldForTraj(maxIdx))
 
         #   calculate probabilities matrix (assignment):
         self.probabilitiesMatrix = self.computeProbabilities(VFs)
@@ -233,23 +233,28 @@ class SoftVectorFieldKMeans:
         :param VF_idx:
         :return:
         '''
-        smoothness = np.dot(self.Laplacian.T, self.Laplacian) * self.smoothnessWeight
+        smoothness = (self.Laplacian.T @ self.Laplacian) * self.smoothnessWeight
         #   obtain the value constraint expression:
         #   multiply by weights:
-        weights = np.dot(self.probaToWeightMatrix, self.probabilitiesMatrix[:, VF_idx])
-        weightedTimes = np.dot(self.trajectoriesTimes.T, self.probabilitiesMatrix[:,VF_idx])
+        weights = (self.probaToWeightMatrix @ self.probabilitiesMatrix[:, VF_idx, np.newaxis])
+        weightedTimes = (self.trajectoriesTimes.T @ self.probabilitiesMatrix[:, VF_idx, np.newaxis])
         coefficient = np.sqrt((1 - self.smoothnessWeight))
         assert weights.shape[1] == 1
-        cur_C_tilde = np.multiply((coefficient * np.sqrt(weights / weightedTimes)), self.C_tilde)
-        cur_b_tilde = np.multiply((coefficient * np.sqrt(weights / weightedTimes)), self.b_tilde)
+        W = (coefficient * np.sqrt(weights / weightedTimes))
+        #cur_C_tilde = np.multiply((coefficient * np.sqrt(weights / weightedTimes)), self.C_tilde)
+        cur_C_tilde = self.C_tilde.multiply(W)
+        cur_b_tilde = np.multiply(W, self.b_tilde)
 
-        A = smoothness + np.dot(cur_C_tilde.T, cur_C_tilde)
-        b = np.dot(cur_C_tilde.T, cur_b_tilde)
+        A = smoothness + (cur_C_tilde.T @ cur_C_tilde)
+        b = (cur_C_tilde.T @ cur_b_tilde)
 
-        VF_x = np.linalg.lstsq(A, b[:, 0])[0]
-        VF_y = np.linalg.lstsq(A, b[:, 1])[0]
+        #VF_x = np.linalg.lstsq(A, b[:, 0])[0]
+        #VF_y = np.linalg.lstsq(A, b[:, 1])[0]
+        from scipy.sparse.linalg import lsqr
+        VF_x = np.array(lsqr(A, b[:, 0])[0])
+        VF_y = np.array(lsqr(A, b[:, 1])[0])
 
-        VF = np.hstack([VF_x, VF_y])
+        VF = np.hstack([VF_x.reshape((VF_x.size,1)), VF_y.reshape((VF_x.size,1))])
         return VF
 
 
@@ -266,13 +271,13 @@ class SoftVectorFieldKMeans:
         :param trajIdx:
         :return:
         '''
-        smoothness = np.dot(self.Laplacian.T, self.Laplacian) * self.smoothnessWeight
+        smoothness = (self.Laplacian.T @ self.Laplacian) * self.smoothnessWeight
         #   obtain the value constraint expression:
         cur_C_tilde = self.trajectoriesC[trajIdx].toarray()
         cur_b_tilde = self.trajectoriesb[trajIdx]
 
-        A = smoothness + np.dot(cur_C_tilde.T, cur_C_tilde)
-        b = np.dot(cur_C_tilde.T, cur_b_tilde)
+        A = smoothness + (cur_C_tilde.T @ cur_C_tilde)
+        b = (cur_C_tilde.T @ cur_b_tilde)
 
         VF_x = np.linalg.lstsq(A, b[:, 0])[0]
         VF_y = np.linalg.lstsq(A, b[:, 1])[0]
@@ -314,14 +319,14 @@ class SoftVectorFieldKMeans:
         %   because both C,b are multiplied by  sqrt(1-lambda) we can
         %   ignore this
         '''
-        err = np.zeros((1, 2))
+        err = np.zeros((2,))
         vf_x = np.reshape(VF[:, 0],(VF.shape[0],1))
         vf_y = np.reshape(VF[:, 1],(VF.shape[0],1))
         b_x = np.reshape(b[:, 0],(b.shape[0],1))
         b_y = np.reshape(b[:, 1],(b.shape[0],1))
-        CTC = np.dot(C.T, C)
-        err[0] = np.dot(np.dot(vf_x.T, CTC), vf_x) - 2 * np.dot(np.dot(b_x.T, C), vf_x) + np.dot(b_x.T, b_x)
-        err[1] = np.dot(np.dot(vf_y.T, CTC), vf_y) - 2 * np.dot(np.dot(b_y.T, C), vf_y) + np.dot(b_y.T, b_y)
+        CTC = (C.T @ C)
+        err[0] = ((vf_x.T @ CTC) @ vf_x) - 2 * ((b_x.T @ C) @ vf_x) + (b_x.T @ b_x)
+        err[1] = ((vf_y.T @ CTC) @ vf_y) - 2 * ((b_y.T @ C) @ vf_y) + (b_y.T @ b_y)
         err = np.sum(err)
         return err
 
@@ -384,13 +389,13 @@ class SoftVectorFieldKMeans:
                 %   will divide only once at the end!
                 '''
                 omega_tag = np.sqrt(traj[seg_i + 1, 2] - traj[seg_i, 2])
-                CallSeg.append(omega_tag * np.dot(self.Lambda, Cs.toarray()))
+                CallSeg.append(omega_tag * (self.Lambda @ Cs))
                 #CallSeg.append(sc.csr_matrix.multiply(sc.csr_matrix.transpose(sc.csr_matrix.dot(sc.csr_matrix.transpose(Cs), sc.csr_matrix(self.Lambda.T))), omega_tag))
 
                 #   compute bs_tilde:
                 eps = 1e-7
                 bs = np.true_divide((traj[seg_i + 1, 0:2] - traj[seg_i, 0:2]), (traj[seg_i + 1, 2] - traj[seg_i, 2] + eps))
-                b_allSeg[seg_i] = omega_tag * np.dot(self.Lambda, np.tile(bs, (2, 1)))
+                b_allSeg[seg_i] = omega_tag * (self.Lambda @ np.tile(bs, (2, 1)))
 
                 startBary = endBary
             if nSegments > 1:
@@ -451,15 +456,15 @@ class SoftVectorFieldKMeans:
         n_rows = self.C_tilde.shape[0]
         n_cols = len(self.trajectories)
         I = np.arange(n_rows)
-        J = np.zeros((1, n_rows))
-        Vals = np.zeros((1, n_rows))
+        J = np.zeros((n_rows,))
+        Vals = np.zeros((n_rows,))
         cur_row = 0
 
         for i in range(len(self.trajectories_n_rows)):
-            cur_last = cur_row + self.trajectories_n_rows[i] - 1
+            cur_last = cur_row + self.trajectories_n_rows[i]
             Vals[cur_row: cur_last] = 1
             J[cur_row: cur_last] = i
-            cur_row = cur_last + 1
+            cur_row = cur_last
 
         probaToWeightsMat = sc.csr_matrix((Vals, (I, J)), (n_rows, n_cols))
         return probaToWeightsMat
@@ -484,9 +489,9 @@ class SoftVectorFieldKMeans:
         while stepSize > convergenceThreshold and iter < maxIterations:
             #   perform a step:
             stepSize = 0
-            newVFs = {}
+            newVFs = []
             for i in range(self.numOfClusters):
-                newVFs[i] = self.fitVectorField(i)
+                newVFs.append(self.fitVectorField(i))
                 #   calculate step size:
                 stepSize = stepSize + np.linalg.norm(newVFs[i] - self.vectorFields[i], ord='fro')
 
